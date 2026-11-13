@@ -116,6 +116,26 @@ def era5_rel_terciles(lat, lon):
     return res
 
 
+def fetch_members(lat, lon):
+    """Ambil data 6-jam per anggota; nama parameter dan bagian respons dideteksi otomatis."""
+    last = None
+    for param in ("six_hourly", "hourly"):
+        loc = as_list(get(SEASONAL, {
+            "latitude": lat, "longitude": lon,
+            "models": "ecmwf_seas5",
+            param: "precipitation",
+            "monthly": "precipitation_mean,precipitation_anomaly",
+        }))[0]
+        last = list(loc)
+        for k, v in loc.items():
+            if (k != "monthly" and not k.endswith("_units") and isinstance(v, dict)
+                    and "time" in v and any(c.startswith("precipitation") for c in v)):
+                print(f"Data 6-jam: parameter '{param}' -> kunci respons '{k}'", file=sys.stderr)
+                return loc, v
+        print(f"Parameter '{param}' tidak menghasilkan data 6-jam. Kunci respons: {last}", file=sys.stderr)
+    raise RuntimeError(f"Respons tidak memuat data 6-jam per anggota. Kunci respons: {last}")
+
+
 def precip_probs(start):
     """Rata-rata antar titik dari peluang (di bawah, normal, di atas) per bulan target.
 
@@ -125,13 +145,8 @@ def precip_probs(start):
     """
     all_p, labels = [], None
     for lat, lon in POINTS:
-        loc = as_list(get(SEASONAL, {
-            "latitude": lat, "longitude": lon,
-            "models": "ecmwf_seas5",
-            "six_hourly": "precipitation",
-            "monthly": "precipitation_mean,precipitation_anomaly",
-        }))[0]
-        sh, mo = loc["six_hourly"], loc["monthly"]
+        loc, sh = fetch_members(lat, lon)
+        mo = loc["monthly"]
         print("Kunci six_hourly:", list(sh)[:5], "... total", len(sh), file=sys.stderr)
         cols = sorted(k for k in sh if k != "time" and k.startswith("precipitation"))
         if len(cols) < 10:
