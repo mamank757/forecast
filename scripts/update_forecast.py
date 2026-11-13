@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Perbarui data/forecast.json dari Open-Meteo Seasonal API (ECMWF SEAS5) dan NOAA CPC. Tanpa akun/token.
 
+- Jumlah bulan prakiraan: FORECAST_MONTHS (default 5), dihitung mulai bulan setelah bulan rilis.
 - Anomali Niño3.4 (prakiraan): rata-rata anomali SST bulanan di 9 titik dalam kotak 5°LU-5°LS, 170°BB-120°BB.
 - Anomali Niño3.4 (analisis lampau): nilai teramati bulanan NOAA CPC (OISST v2.1, klimatologi 1991-2020)
   untuk PAST_MONTHS bulan terakhir (default 6 = 5 bulan sebelumnya + bulan terkini yang sudah dirilis).
@@ -8,6 +9,7 @@
   di bawah/di atas tercile anomali relatif hujan bulanan ERA5 1991-2020 di titik lokal.
 Catatan: nama parameter/kolom Open-Meteo dan format berkas CPC belum diuji dari sini. Jalankan sekali dan baca lognya.
 """
+import calendar
 import datetime as dt
 import json
 import os
@@ -31,6 +33,7 @@ POINTS = json.loads(os.environ.get("POINTS", "[[-5.15, 119.40]]"))
 LOCATION = os.environ.get("LOCATION", "Makassar, Sulawesi Selatan")
 NINO_POINTS = [[lat, lon] for lat in (-4, 0, 4) for lon in (-165, -145, -125)]
 PAST_MONTHS = int(os.environ.get("PAST_MONTHS", "6"))  # 5 bulan lalu + bulan terkini
+FORECAST_MONTHS = int(os.environ.get("FORECAST_MONTHS", "5"))  # bulan ke depan (maks. ~6 untuk SEAS5)
 
 BULAN = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"]
 
@@ -67,9 +70,9 @@ def pick(monthly, var, kind):
 
 
 def target_index(times, start):
-    """Indeks 3 bulan setelah bulan rilis (lead 2-4) di daftar waktu respons."""
+    """Indeks FORECAST_MONTHS bulan setelah bulan rilis di daftar waktu respons."""
     idx, labels, nums = [], [], []
-    for i in (1, 2, 3):
+    for i in range(1, FORECAST_MONTHS + 1):
         k = start.month - 1 + i
         key = f"{start.year + k // 12}-{k % 12 + 1:02d}"
         j = next((n for n, t in enumerate(times) if str(t).startswith(key)), None)
@@ -157,13 +160,26 @@ def era5_rel_terciles(lat, lon):
     return res
 
 
-def fetch_members(lat, lon):
+def forecast_days(start):
+    """Hari prakiraan yang diminta agar data 6-jam mencakup akhir bulan target terakhir.
+
+    Bawaan Open-Meteo hanya ~92 hari, tidak cukup untuk 4-5 bulan ke depan.
+    Dipilih nilai terkecil dari 92/183/274 yang cukup.
+    """
+    k = start.month - 1 + FORECAST_MONTHS + 1  # indeks (basis 0) bulan setelah bulan target terakhir
+    end = dt.date(start.year + k // 12, k % 12 + 1, 1) - dt.timedelta(days=1)
+    need = (end - dt.datetime.now(dt.timezone.utc).date()).days + 3
+    return next((d for d in (92, 183, 274) if d >= need), 274)
+
+
+def fetch_members(lat, lon, days):
     """Ambil data 6-jam per anggota; nama parameter dan bagian respons dideteksi otomatis."""
     last = None
     for param in ("six_hourly", "hourly"):
         loc = as_list(get(SEASONAL, {
             "latitude": lat, "longitude": lon,
             "models": "ecmwf_seas5",
+            "forecast_days": days,
             param: "precipitation",
             "monthly": "precipitation_mean,precipitation_anomaly",
         }))[0]
@@ -185,8 +201,10 @@ def precip_probs(start):
     lalu diskalakan ke mm/bulan dengan membandingkan rata-rata anggota terhadap nilai mean.
     """
     all_p, labels = [], None
+    days = forecast_days(start)
+    print(f"forecast_days={days} untuk {FORECAST_MONTHS} bulan prakiraan", file=sys.stderr)
     for lat, lon in POINTS:
-        loc, sh = fetch_members(lat, lon)
+        loc, sh = fetch_members(lat, lon, days)
         mo = loc["monthly"]
         print("Kunci six_hourly:", list(sh)[:5], "... total", len(sh), file=sys.stderr)
         cols = sorted(k for k in sh if k != "time" and k.startswith("precipitation"))
@@ -201,6 +219,10 @@ def precip_probs(start):
             kk = start.month - 1 + (i + 1)
             key = f"{start.year + kk // 12}-{kk % 12 + 1:02d}"
             sel = np.array([s.startswith(key) for s in stamps])
+            last_day = calendar.monthrange(int(key[:4]), int(key[5:]))[1]
+            if stamps[-1][:10] < f"{key}-{last_day:02d}":
+                print(f"Peringatan: data 6-jam berakhir {stamps[-1][:10]}, sebelum akhir {key}; "
+                      "bulan ini hanya terhitung sebagian.", file=sys.stderr)
             T = X[:, sel].sum(axis=1)                          # total bulanan per anggota (mm)
             mean_v = float(mo["precipitation_mean"][j])
             anom_v = float(mo["precipitation_anomaly"][j])
@@ -236,8 +258,10 @@ def main():
         old = json.loads(OUT.read_text())
         keys = (old.get("past") or {}).get("keys") or [""]
         # Lewati hanya jika prakiraan bulan ini ada DAN analisis lampau sudah sampai bulan sebelumnya
-        # (CPC kadang terlambat; run hari berikutnya akan mencoba lagi).
-        if old.get("start") == ym and keys[-1] >= latest_expected_key(start):
+        # (CPC kadang terlambat; run hari berikutnya akan mencoba lagi) dan jumlah bulannya sama
+        # dengan FORECAST_MONTHS.
+        if (old.get("start") == ym and len(old.get("months", [])) == FORECAST_MONTHS
+                and keys[-1] >= latest_expected_key(start)):
             print(f"Data {ym} sudah terbaru; dilewati (set FORCE=1 untuk memaksa).")
             return
 
@@ -266,7 +290,7 @@ def main():
                  "teramati dari NOAA CPC. Anomali prakiraan terhadap klimatologi model, anomali analisis "
                  "terhadap klimatologi OISST 1991–2020. Peluang hujan dihitung dari anggota ensemble "
                  "terhadap tercile anomali relatif ERA5 1991–2020 dan belum dikalibrasi ke pos hujan. "
-                 "Bukan prakiraan resmi BMKG."),
+                 "Keandalan menurun untuk bulan yang lebih jauh. Bukan prakiraan resmi BMKG."),
     }
     if past:
         out["past"] = past
