@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Prakiraan hujan 3 bulan ke depan berbasis ENSO</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,500;6..72,700&family=Instrument+Sans:wght@400;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#f3f6f7; --ink:#12262e; --muted:#5b6d74; --line:#cfd9dc;
+  --sea:#0f5c6e; --rain:#2b7fb8; --dry:#c9a66b; --mid:#b9c4c8;
+  --el:#f3e3d3; --ln:#dcebf5;
+  --serif:"Newsreader",Georgia,serif; --sans:"Instrument Sans",system-ui,sans-serif;
+}
+*{box-sizing:border-box}
+html{color-scheme:light}
+body{margin:0;background:var(--paper);color:var(--ink);font:400 1rem/1.55 var(--sans)}
+main{max-width:760px;margin:0 auto;padding:2.5rem 1.25rem 3rem}
+h1{font:700 clamp(1.8rem,5vw,2.6rem)/1.15 var(--serif);margin:0 0 .5rem;letter-spacing:-.01em}
+h2{font:700 1.3rem/1.2 var(--serif);margin:2.5rem 0 .25rem}
+p{margin:.25rem 0}
+.sub{color:var(--muted);max-width:60ch}
+.demo{background:#fff3cd;border:1px solid #e0c96b;padding:.6rem .9rem;border-radius:4px;margin:1.25rem 0;font-size:.92rem}
+.demo[hidden]{display:none}
+.hero{margin-top:1.5rem;border-top:2px solid var(--ink);padding-top:1rem}
+.hero .lead{font:500 1.25rem/1.4 var(--serif);max-width:52ch}
+svg{width:100%;height:auto;display:block;margin-top:.75rem;overflow:visible}
+svg text{font:400 11px var(--sans);fill:var(--muted)}
+svg .val{fill:var(--sea);font-weight:600}
+.band-el{fill:var(--el)} .band-ln{fill:var(--ln)}
+.grid{stroke:var(--line);stroke-width:1} .zero{stroke:var(--ink);stroke-width:1}
+.thr{stroke:var(--muted);stroke-width:1;stroke-dasharray:4 3}
+.mline{fill:none;stroke:#8a9ba2;stroke-width:1.2}
+.eline{fill:none;stroke:var(--sea);stroke-width:3}
+.cap{font-size:.85rem;color:var(--muted)}
+.row{display:grid;grid-template-columns:5.5rem 1fr;gap:.75rem;align-items:center;margin:.5rem 0}
+.lbl{font-weight:600}
+.bar{display:flex;height:2.1rem;border-radius:3px;overflow:hidden;background:var(--line)}
+.seg{display:flex;align-items:center;justify-content:center;font-size:.85rem;font-weight:600;min-width:0}
+.seg.below{background:var(--dry);color:#3a2d12}
+.seg.normal{background:var(--mid);color:var(--ink)}
+.seg.above{background:var(--rain);color:#fff}
+.key{display:flex;flex-wrap:wrap;gap:.4rem 1.2rem;font-size:.88rem;margin-top:.75rem}
+.key i{display:inline-block;width:.8rem;height:.8rem;border-radius:2px;margin-right:.35rem;vertical-align:-1px}
+footer{margin-top:2.5rem;padding-top:1rem;border-top:1px solid var(--line);font-size:.85rem;color:var(--muted)}
+@media (max-width:480px){.row{grid-template-columns:1fr;gap:.25rem}}
+</style>
+</head>
+<body>
+<main>
+  <h1>Prakiraan hujan 3 bulan ke depan</h1>
+  <p class="sub" id="meta">Memuat data…</p>
+  <div class="demo" id="demo" hidden>Data contoh, bukan prakiraan sungguhan. Taruh berkas <code>data/forecast.json</code> di repositori ini untuk menampilkan data Anda.</div>
+
+  <section class="hero">
+    <p class="lead" id="lead"></p>
+    <svg id="plume" viewBox="0 0 720 320" role="img" aria-label="Prakiraan anomali Niño3.4 per bulan"></svg>
+    <p class="cap" id="cap"></p>
+  </section>
+
+  <section>
+    <h2>Peluang curah hujan per bulan</h2>
+    <p class="cap">Probabilitas tiga kategori terhadap normal 1991–2020.</p>
+    <div id="bars"></div>
+    <div class="key">
+      <span><i style="background:var(--dry)"></i>Di bawah normal</span>
+      <span><i style="background:var(--mid)"></i>Normal</span>
+      <span><i style="background:var(--rain)"></i>Di atas normal</span>
+    </div>
+  </section>
+
+  <footer id="foot">Sumber: NMME (CPC/IRI) dan Copernicus C3S. Ini bukan prakiraan resmi BMKG.</footer>
+</main>
+
+<script>
+const DEMO = {
+  issued: "contoh",
+  location: "Makassar, Sulawesi Selatan",
+  months: ["Des 2026", "Jan 2027", "Feb 2027"],
+  nino34: {
+    models: {
+      "ECMWF": [-0.6, -0.5, -0.3],
+      "NCEP CFSv2": [-0.8, -0.7, -0.5],
+      "GFDL SPEAR": [-0.5, -0.4, -0.2]
+    }
+  },
+  tercile: { below: [20, 25, 30], normal: [30, 30, 35], above: [50, 45, 35] },
+  note: ""
+};
+
+const NS = "http://www.w3.org/2000/svg";
+const s = (tag, attrs = {}, text) => {
+  const e = document.createElementNS(NS, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  if (text != null) e.textContent = text;
+  return e;
+};
+const h = (tag, cls, text) => {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = text;
+  return e;
+};
+const fmt = v => (v > 0 ? "+" : v < 0 ? "−" : "") + Math.abs(v).toFixed(1).replace(".", ",");
+const mean = a => a.reduce((x, y) => x + y, 0) / a.length;
+
+function ensemble(d) {
+  if (Array.isArray(d.nino34.ensemble)) return d.nino34.ensemble;
+  const m = Object.values(d.nino34.models);
+  return d.months.map((_, i) => mean(m.map(a => a[i])));
+}
+
+function drawPlume(d, ens) {
+  const W = 720, H = 320, m = { l: 40, r: 60, t: 16, b: 34 };
+  const n = d.months.length;
+  const all = [...ens, ...Object.values(d.nino34.models).flat()];
+  const lo = Math.min(-1.5, Math.floor(Math.min(...all))), hi = Math.max(1.5, Math.ceil(Math.max(...all)));
+  const x = i => m.l + (n === 1 ? (W - m.l - m.r) / 2 : i * (W - m.l - m.r) / (n - 1));
+  const y = v => m.t + (hi - v) * (H - m.t - m.b) / (hi - lo);
+  const pw = W - m.l - m.r;
+  const svg = document.getElementById("plume");
+  svg.replaceChildren();
+  svg.appendChild(s("rect", { x: m.l, y: y(hi), width: pw, height: y(0.5) - y(hi), class: "band-el" }));
+  svg.appendChild(s("rect", { x: m.l, y: y(-0.5), width: pw, height: y(lo) - y(-0.5), class: "band-ln" }));
+  for (let v = Math.ceil(lo); v <= hi; v++) {
+    svg.appendChild(s("line", { x1: m.l, x2: m.l + pw, y1: y(v), y2: y(v), class: v === 0 ? "zero" : "grid" }));
+    svg.appendChild(s("text", { x: m.l - 8, y: y(v) + 4, "text-anchor": "end" }, fmt(v).replace(",0", "")));
+  }
+  [0.5, -0.5].forEach(v => svg.appendChild(s("line", { x1: m.l, x2: m.l + pw, y1: y(v), y2: y(v), class: "thr" })));
+  svg.appendChild(s("text", { x: m.l + pw + 6, y: y(0.5) - 6 }, "El Niño"));
+  svg.appendChild(s("text", { x: m.l + pw + 6, y: y(-0.5) + 14 }, "La Niña"));
+  const path = a => a.map((v, i) => (i ? "L" : "M") + x(i) + " " + y(v)).join(" ");
+  Object.values(d.nino34.models).forEach(a => svg.appendChild(s("path", { d: path(a), class: "mline" })));
+  svg.appendChild(s("path", { d: path(ens), class: "eline" }));
+  ens.forEach((v, i) => {
+    svg.appendChild(s("circle", { cx: x(i), cy: y(v), r: 4.5, fill: "#0f5c6e" }));
+    svg.appendChild(s("text", { x: x(i), y: y(v) - 10, "text-anchor": "middle", class: "val" }, fmt(v)));
+  });
+  d.months.forEach((mo, i) => svg.appendChild(s("text", { x: x(i), y: H - 10, "text-anchor": "middle" }, mo)));
+}
+
+function drawBars(d) {
+  const box = document.getElementById("bars");
+  box.replaceChildren();
+  const t = d.tercile;
+  d.months.forEach((mo, i) => {
+    const row = h("div", "row");
+    row.setAttribute("role", "group");
+    row.setAttribute("aria-label", `${mo}: di bawah normal ${t.below[i]}%, normal ${t.normal[i]}%, di atas normal ${t.above[i]}%`);
+    row.appendChild(h("span", "lbl", mo));
+    const bar = h("div", "bar");
+    ["below", "normal", "above"].forEach(k => {
+      const v = t[k][i];
+      const seg = h("span", "seg " + k, v >= 12 ? v + "%" : "");
+      seg.style.flexBasis = v + "%";
+      bar.appendChild(seg);
+    });
+    row.appendChild(bar);
+    box.appendChild(row);
+  });
+}
+
+function render(d, isDemo) {
+  const ens = ensemble(d);
+  const avg = mean(ens);
+  const phase = avg >= 0.5 ? "El Niño" : avg <= -0.5 ? "La Niña" : "netral";
+  document.getElementById("demo").hidden = !isDemo;
+  document.getElementById("meta").textContent =
+    `${d.location}. Dirilis: ${d.issued}.`;
+  document.getElementById("lead").textContent =
+    `Rata-rata ensemble Niño3.4 untuk ${d.months[0]} sampai ${d.months[d.months.length - 1]} berada di ${fmt(avg)} °C: kondisi ${phase}.`;
+  document.getElementById("cap").textContent =
+    "Garis tebal adalah rata-rata ensemble; garis abu-abu adalah masing-masing model (" +
+    Object.keys(d.nino34.models).join(", ") + "). Nilai berupa anomali bulanan, bukan ONI tiga bulanan.";
+  if (d.note) document.getElementById("foot").textContent = d.note;
+  drawPlume(d, ens);
+  drawBars(d);
+}
+
+fetch("data/forecast.json", { cache: "no-store" })
+  .then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })
+  .then(d => render(d, false))
+  .catch(() => render(DEMO, true));
+</script>
+</body>
+</html>
