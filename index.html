@@ -38,6 +38,8 @@ svg .tag{fill:var(--ink);font-weight:600}
 .mline{fill:none;stroke:#8a9ba2;stroke-width:1.2}
 .eline{fill:none;stroke:var(--sea);stroke-width:3}
 .pline{fill:none;stroke:var(--ink);stroke-width:2.5}
+.rline{fill:none;stroke:#b5651d;stroke-width:2.2}
+svg .rval{fill:#b5651d;font-weight:600}
 .bridge{fill:none;stroke:var(--muted);stroke-width:1.5;stroke-dasharray:2 4}
 .cap{font-size:.85rem;color:var(--muted)}
 .row{display:grid;grid-template-columns:5.5rem 1fr;gap:.75rem;align-items:center;margin:.5rem 0}
@@ -62,6 +64,7 @@ footer{margin-top:2.5rem;padding-top:1rem;border-top:1px solid var(--line);font-
   <section class="hero">
     <p class="lead" id="lead"></p>
     <svg id="plume" viewBox="0 0 720 330" role="img" aria-label="Analisis dan prakiraan anomali Niño3.4 per bulan"></svg>
+    <div class="key" id="plume-key"></div>
     <p class="cap" id="cap"></p>
   </section>
 
@@ -87,7 +90,12 @@ const DEMO = {
   past: {
     source: "contoh",
     months: ["Mei 2026", "Jun 2026", "Jul 2026", "Agu 2026", "Sep 2026", "Okt 2026"],
-    nino34: [-0.2, -0.3, -0.4, -0.5, -0.5, -0.6]
+    nino34: [-0.2, -0.3, -0.4, -0.5, -0.5, -0.6],
+    relative: {
+      source: "contoh",
+      months: ["Mei 2026", "Jun 2026", "Jul 2026", "Agu 2026", "Sep 2026"],
+      nino34: [-0.6, -0.7, -0.8, -0.9, -0.9]
+    }
   },
   nino34: {
     models: {
@@ -119,6 +127,8 @@ const mean = a => a.reduce((x, y) => x + y, 0) / a.length;
 // "Des 2026" -> nomor bulan berurutan (tahun*12 + indeks bulan), agar sumbu-x berskala bulan
 const monthNum = label => { const [b, y] = label.split(" "); return +y * 12 + BULAN.indexOf(b); };
 const shortLabel = n => BULAN[n % 12] + " " + String(Math.floor(n / 12)).slice(2);
+const hasRel = d => !!(hasPast(d) && d.past.relative && Array.isArray(d.past.relative.nino34)
+  && d.past.relative.nino34.length && d.past.relative.months.length === d.past.relative.nino34.length);
 const hasPast = d => !!(d.past && Array.isArray(d.past.nino34) && d.past.nino34.length
   && Array.isArray(d.past.months) && d.past.months.length === d.past.nino34.length);
 
@@ -131,11 +141,13 @@ function ensemble(d) {
 function drawPlume(d, ens) {
   const W = 720, H = 330, m = { l: 40, r: 60, t: 30, b: 34 }, pad = 22;
   const past = hasPast(d) ? d.past : null;
+  const rel = hasRel(d) ? d.past.relative : null;
   const pN = past ? past.months.map(monthNum) : [];
+  const rN = rel ? rel.months.map(monthNum) : [];
   const fN = d.months.map(monthNum);
-  const first = Math.min(...pN, ...fN), last = Math.max(...pN, ...fN);
+  const first = Math.min(...pN, ...rN, ...fN), last = Math.max(...pN, ...rN, ...fN);
   const span = Math.max(1, last - first);
-  const all = [...ens, ...Object.values(d.nino34.models).flat(), ...(past ? past.nino34 : [])];
+  const all = [...ens, ...Object.values(d.nino34.models).flat(), ...(past ? past.nino34 : []), ...(rel ? rel.nino34 : [])];
   const lo = Math.min(-1.5, Math.floor(Math.min(...all))), hi = Math.max(1.5, Math.ceil(Math.max(...all)));
   const pw = W - m.l - m.r;
   const x = n => m.l + pad + (n - first) * (pw - 2 * pad) / span;
@@ -166,7 +178,16 @@ function drawPlume(d, ens) {
   Object.values(d.nino34.models).forEach(a => svg.appendChild(s("path", { d: path(fN, a), class: "mline" })));
   svg.appendChild(s("path", { d: path(fN, ens), class: "eline" }));
 
-  // Analisis teramati + sambungan putus-putus ke prakiraan pertama
+  // Pembanding: Niño3.4 relatif (basis indeks resmi NOAA/BoM); label di bawah titik
+  if (rel) {
+    svg.appendChild(s("path", { d: path(rN, rel.nino34), class: "rline" }));
+    rel.nino34.forEach((v, i) => {
+      svg.appendChild(s("circle", { cx: x(rN[i]), cy: y(v), r: 3, fill: "#b5651d" }));
+      svg.appendChild(s("text", { x: x(rN[i]), y: y(v) + 16, "text-anchor": "middle", class: "rval" }, fmt(v)));
+    });
+  }
+
+  // Analisis teramati (tradisional) + sambungan putus-putus ke prakiraan pertama
   if (past) {
     const iLast = pN.indexOf(Math.max(...pN));
     svg.appendChild(s("path", {
@@ -214,30 +235,54 @@ function drawBars(d) {
 function render(d, isDemo) {
   const ens = ensemble(d);
   const avg = mean(ens);
-  const phase = avg >= 0.5 ? "El Niño" : avg <= -0.5 ? "La Niña" : "netral";
   const past = hasPast(d) ? d.past : null;
+  const rel = hasRel(d) ? d.past.relative : null;
   document.getElementById("demo").hidden = !isDemo;
   const title = `Prakiraan hujan ${d.months.length} bulan ke depan`;
   document.getElementById("title").textContent = title;
   document.title = title + " berbasis ENSO";
   document.getElementById("meta").textContent =
     `${d.location}. Dirilis: ${d.issued}.`;
-  let lead = `Rata-rata ensemble Niño3.4 untuk ${d.months[0]} sampai ${d.months[d.months.length - 1]} berada di ${fmt(avg)} °C: kondisi ${phase}.`;
+  let lead = `Rata-rata ensemble Niño3.4 (indeks tradisional) untuk ${d.months[0]} sampai ${d.months[d.months.length - 1]} berada di ${fmt(avg)} °C.`;
   if (past) {
     const i = past.nino34.length - 1;
-    lead += ` Analisis terbaru (${past.months[i]}): ${fmt(past.nino34[i])} °C.`;
+    lead += ` Analisis terbaru (${past.months[i]}): ${fmt(past.nino34[i])} °C`;
+    if (rel) {
+      const j = rel.nino34.length - 1;
+      lead += `; indeks relatif (${rel.months[j]}): ${fmt(rel.nino34[j])} °C`;
+    }
+    lead += ".";
   }
   document.getElementById("lead").textContent = lead;
+
+  const key = document.getElementById("plume-key");
+  key.replaceChildren();
+  const item = (color, text) => {
+    const sp = h("span");
+    const sw = h("i");
+    sw.style.background = color;
+    sp.appendChild(sw);
+    sp.appendChild(document.createTextNode(text));
+    key.appendChild(sp);
+  };
+  if (past) item("var(--ink)", "Teramati, tradisional");
+  if (rel) item("#b5651d", "Teramati, relatif (basis BoM/NOAA)");
+  item("var(--sea)", "Prakiraan SEAS5, tradisional");
+  item("#8a9ba2", "Masing-masing model");
+
+  let diffTxt = "";
+  if (past && rel) {
+    const pm = new Map(past.months.map((m, i) => [monthNum(m), past.nino34[i]]));
+    const diffs = rel.months.map((m, i) => [monthNum(m), rel.nino34[i]])
+      .filter(([n]) => pm.has(n)).map(([n, v]) => pm.get(n) - v);
+    if (diffs.length) {
+      diffTxt = ` Pada ${diffs.length} bulan yang sama, indeks tradisional rata-rata ${fmt(mean(diffs))} °C terhadap relatif (selisih ini juga memuat perbedaan dataset OISST dan ERSSTv6).`;
+    }
+  }
   document.getElementById("cap").textContent =
-    (past
-      ? `Garis hitam: analisis teramati ${past.months.length} bulan terakhir (${past.source}). `
-      : "") +
-    "Garis tebal berwarna: rata-rata ensemble prakiraan; garis abu-abu: masing-masing model (" +
-    Object.keys(d.nino34.models).join(", ") + "). " +
-    (past
-      ? "Analisis dan prakiraan memakai klimatologi berbeda, jadi selisih kecil di sambungan putus-putus bukan perubahan nyata. "
-      : "") +
-    "Nilai berupa anomali bulanan, bukan ONI tiga bulanan.";
+    "BoM dan NOAA kini memakai indeks relatif, yaitu anomali Niño3.4 dikurangi rata-rata tropis, jadi nilainya lebih rendah daripada indeks tradisional. " +
+    "Untuk membandingkan dengan BoM atau NOAA, lihat garis relatif; prakiraan SEAS5 belum tersedia dalam versi relatif." + diffTxt +
+    " Pita ±0,5 °C mengikuti ambang NOAA, sedangkan BoM memakai sekitar ±0,8 °C. Nilai berupa anomali bulanan, bukan ONI tiga bulanan.";
   if (d.note) document.getElementById("foot").textContent = d.note;
   drawPlume(d, ens);
   drawBars(d);
