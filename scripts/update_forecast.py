@@ -6,7 +6,10 @@
 - Anomali Niño3.4 TRADISIONAL (analisis lampau): nilai teramati bulanan NOAA CPC (OISST v2.1, klimatologi 1991-2020)
   untuk PAST_MONTHS bulan terakhir (default 6 = 5 bulan sebelumnya + bulan terkini yang sudah dirilis).
   Sebagai pembanding dengan BoM/NOAA resmi, ditambahkan Niño3.4 RELATIF bulanan (CPC Rnino34, ERSSTv6)
-  untuk rentang bulan yang sama. Prakiraan SEAS5 tetap tradisional (belum dikurangi rata-rata tropis).
+  untuk rentang bulan yang sama (sumber utama: rel_mthsst9120.txt, OISST; cadangan: Rnino34, ERSSTv6).
+- Prakiraan SEAS5 itu tradisional, sehingga lebih tinggi daripada indeks relatif BoM/NOAA. Skrip menyetarakannya
+  dengan mengurangkan offset = rata-rata (tradisional - relatif) pada CAL_MONTHS bulan teramati terakhir
+  (default 3). Ini konversi skala, bukan koreksi bias model. Data SEAS5 mentah tetap disimpan.
 - Peluang hujan: porsi anggota ensemble (51, dari data 6-jam) yang anomali relatifnya jatuh
   di bawah/di atas tercile anomali relatif hujan bulanan ERA5 1991-2020 di titik lokal.
 Catatan: nama parameter/kolom Open-Meteo dan format berkas CPC belum diuji dari sini. Jalankan sekali dan baca lognya.
@@ -29,7 +32,9 @@ OUT = DATA / "forecast.json"
 SEASONAL = "https://seasonal-api.open-meteo.com/v1/seasonal"
 ARCHIVE = "https://archive-api.open-meteo.com/v1/archive"
 CPC_NINO = "https://www.cpc.ncep.noaa.gov/data/indices/sstoi.indices"
-CPC_REL = "https://www.cpc.ncep.noaa.gov/data/indices/Rnino34.ascii.txt"
+CPC_REL = "https://www.cpc.ncep.noaa.gov/data/indices/Rnino34.ascii.txt"  # relatif, ERSSTv6 (cadangan)
+CPC_REL_OISST = "https://www.cpc.ncep.noaa.gov/data/indices/rel_mthsst9120.txt"  # relatif, OISST v2.1
+CAL_MONTHS = int(os.environ.get("CAL_MONTHS", "3"))  # bulan teramati terakhir untuk menghitung offset
 
 # Titik lokal [lintang, bujur]; ganti lewat env POINTS, mis. '[[-5.15,119.4],[-4.0,119.6]]'
 POINTS = json.loads(os.environ.get("POINTS", "[[-5.15, 119.40]]"))
@@ -149,17 +154,60 @@ def parse_rnino34(text):
     return rows
 
 
-def nino34_relative(first_key):
-    """Niño3.4 relatif bulanan (CPC, ERSSTv6) mulai dari bulan `first_key` (YYYY-MM)."""
-    rows = [r for r in parse_rnino34(get(CPC_REL, text=True)) if f"{r[0]}-{r[1]:02d}" >= first_key]
+def parse_rel_oisst(text):
+    """Baris (tahun, bulan, rNINO3.4) dari rel_mthsst9120.txt; kolom dibaca lewat baris judul."""
+    col, rows = 5, []
+    for line in text.splitlines():
+        p = line.split()
+        if "rNINO3.4" in p:
+            col = p.index("rNINO3.4")
+            continue
+        if len(p) > col and p[0].isdigit() and p[1].isdigit():
+            try:
+                y, mo, v = int(p[0]), int(p[1]), float(p[col])
+            except ValueError:
+                continue
+            if 1 <= mo <= 12 and abs(v) < 9:
+                rows.append((y, mo, v))
     if not rows:
-        raise RuntimeError(f"Niño3.4 relatif belum memuat bulan sejak {first_key}")
-    return {
-        "source": "NOAA CPC, Niño3.4 relatif (ERSSTv6), anomali terhadap 1991–2020",
-        "months": [f"{BULAN[mo - 1]} {y}" for y, mo, _ in rows],
-        "keys": [f"{y}-{mo:02d}" for y, mo, _ in rows],
-        "nino34": [round(v, 2) for _, _, v in rows],
-    }
+        raise RuntimeError(f"Tidak ada baris rNINO3.4 yang terbaca. Awal berkas: {text[:200]!r}")
+    return rows
+
+
+def nino34_relative(first_key):
+    """Niño3.4 relatif bulanan (CPC) mulai dari bulan `first_key` (YYYY-MM): OISST dulu, lalu ERSSTv6."""
+    err = None
+    for url, parser, label in (
+        (CPC_REL_OISST, parse_rel_oisst, "NOAA CPC, Niño3.4 relatif (OISST v2.1), anomali terhadap 1991–2020"),
+        (CPC_REL, parse_rnino34, "NOAA CPC, Niño3.4 relatif (ERSSTv6), anomali terhadap 1991–2020"),
+    ):
+        try:
+            rows = [r for r in parser(get(url, text=True)) if f"{r[0]}-{r[1]:02d}" >= first_key]
+            if not rows:
+                raise RuntimeError(f"belum memuat bulan sejak {first_key}")
+            return {
+                "source": label,
+                "months": [f"{BULAN[mo - 1]} {y}" for y, mo, _ in rows],
+                "keys": [f"{y}-{mo:02d}" for y, mo, _ in rows],
+                "nino34": [round(v, 2) for _, _, v in rows],
+            }
+        except Exception as e:
+            err = e
+            print(f"Peringatan: sumber relatif {url} gagal ({e})", file=sys.stderr)
+    raise RuntimeError(err)
+
+
+def relative_offset(past):
+    """Offset tradisional - relatif: rata-rata pada CAL_MONTHS bulan teramati terakhir yang ada di keduanya."""
+    rel = dict(zip(past["relative"]["keys"], past["relative"]["nino34"]))
+    pairs = [(k, m, t - rel[k]) for k, m, t in zip(past["keys"], past["months"], past["nino34"])
+             if k in rel][-CAL_MONTHS:]
+    if not pairs:
+        raise RuntimeError("tidak ada bulan yang tumpang tindih antara indeks tradisional dan relatif")
+    off = float(np.mean([d for _, _, d in pairs]))
+    if not -1.5 <= off <= 1.5:
+        raise RuntimeError(f"offset {off:.2f} di luar rentang wajar; tidak dipakai")
+    return off, [m for _, m, _ in pairs]
 
 
 def nino34_observed(n=PAST_MONTHS):
@@ -312,6 +360,20 @@ def main():
     except Exception as e:  # analisis lampau hanya pelengkap; jangan gagalkan prakiraan
         print(f"Peringatan: analisis Niño3.4 teramati gagal ({e}); grafik tanpa data lampau.", file=sys.stderr)
         past = None
+    nino = {"models": {"ECMWF SEAS5": anom}}
+    if past and past.get("relative"):
+        try:
+            off, used = relative_offset(past)
+            nino = {
+                "models": {"ECMWF SEAS5 (mentah, tradisional)": anom},
+                "ensemble": [round(a - off, 2) for a in anom],
+                "calibration": {"method": "offset", "offset": round(off, 2), "months": used,
+                                "basis": "rata-rata (tradisional - relatif) pada bulan teramati terakhir"},
+            }
+            print(f"Offset tradisional-relatif {off:.2f} dari {used}; SEAS5 disetarakan:", nino["ensemble"])
+        except Exception as e:
+            print(f"Peringatan: penyetaraan ke indeks relatif gagal ({e}); SEAS5 ditampilkan mentah.",
+                  file=sys.stderr)
     P, months = precip_probs(start)
     below = np.rint(P[0] * 100).astype(int)
     above = np.rint(P[2] * 100).astype(int)
@@ -323,11 +385,13 @@ def main():
         "issued": now.strftime("%Y-%m-%d"),
         "location": LOCATION,
         "months": months,
-        "nino34": {"models": {"ECMWF SEAS5": anom}},
+        "nino34": nino,
         "tercile": {"below": below.tolist(), "normal": normal.tolist(), "above": above.tolist()},
         "note": ("Sumber: ECMWF SEAS5 melalui Open-Meteo.com (CC BY 4.0, non-komersial); analisis Niño3.4 "
-                 "teramati dari NOAA CPC. Prakiraan dan garis hitam memakai Niño3.4 tradisional; BoM dan NOAA "
+                 "teramati dari NOAA CPC. SEAS5 mentah dan garis hitam memakai Niño3.4 tradisional; BoM dan NOAA "
                  "kini memakai indeks relatif (dikurangi rata-rata tropis), sehingga angkanya lebih rendah. "
+                 "Garis tebal prakiraan sudah dikurangi offset tradisional-relatif dari bulan teramati terakhir "
+                 "(konversi skala, bukan koreksi bias model). "
                  "Anomali prakiraan terhadap klimatologi model, anomali analisis terhadap klimatologi 1991–2020. Peluang hujan dihitung dari anggota ensemble "
                  "terhadap tercile anomali relatif ERA5 1991–2020 dan belum dikalibrasi ke pos hujan. "
                  "Keandalan menurun untuk bulan yang lebih jauh. Bukan prakiraan resmi BMKG."),
