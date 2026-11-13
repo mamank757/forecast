@@ -1,0 +1,37 @@
+{
+  "start": "2026-11",
+  "issued": "2026-11-13",
+  "location": "Makassar, Sulawesi Selatan",
+  "months": [
+    "Des 2026",
+    "Jan 2027",
+    "Feb 2027"
+  ],
+  "nino34": {
+    "models": {
+      "ECMWF SEAS5": [
+        3.92,
+        3.92,
+        3.69
+      ]
+    }
+  },
+  "tercile": {
+    "below": [
+      59,
+      69,
+      71
+    ],
+    "normal": [
+      39,
+      29,
+      25
+    ],
+    "above": [
+      2,
+      2,
+      4
+    ]
+  },
+  "note": "Sumber: ECMWF SEAS5 melalui Open-Meteo.com (CC BY 4.0, non-komersial). Anomali terhadap klimatologi model. Peluang hujan dihitung dari anggota ensemble terhadap tercile anomali relatif ERA5 1991–2020 dan belum dikalibrasi ke pos hujan. Bukan prakiraan resmi BMKG."
+}
