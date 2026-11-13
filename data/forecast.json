@@ -43,9 +43,9 @@
       90
     ]
   },
-  "note": "Sumber: ECMWF SEAS5 melalui Open-Meteo.com (CC BY 4.0, non-komersial); analisis Niño3.4 teramati dari NOAA CPC. Anomali prakiraan terhadap klimatologi model, anomali analisis terhadap klimatologi OISST 1991–2020. Peluang hujan dihitung dari anggota ensemble terhadap tercile anomali relatif ERA5 1991–2020 dan belum dikalibrasi ke pos hujan. Keandalan menurun untuk bulan yang lebih jauh. Bukan prakiraan resmi BMKG.",
+  "note": "Sumber: ECMWF SEAS5 melalui Open-Meteo.com (CC BY 4.0, non-komersial); analisis Niño3.4 teramati dari NOAA CPC. Prakiraan dan garis hitam memakai Niño3.4 tradisional; BoM dan NOAA kini memakai indeks relatif (dikurangi rata-rata tropis), sehingga angkanya lebih rendah. Anomali prakiraan terhadap klimatologi model, anomali analisis terhadap klimatologi 1991–2020. Peluang hujan dihitung dari anggota ensemble terhadap tercile anomali relatif ERA5 1991–2020 dan belum dikalibrasi ke pos hujan. Keandalan menurun untuk bulan yang lebih jauh. Bukan prakiraan resmi BMKG.",
   "past": {
-    "source": "NOAA CPC (OISST v2.1), anomali terhadap 1991–2020",
+    "source": "NOAA CPC, Niño3.4 tradisional (OISST v2.1), anomali terhadap 1991–2020",
     "months": [
       "Mei 2026",
       "Jun 2026",
@@ -69,6 +69,33 @@
       2.52,
       2.84,
       3.25
-    ]
+    ],
+    "relative": {
+      "source": "NOAA CPC, Niño3.4 relatif (ERSSTv6), anomali terhadap 1991–2020",
+      "months": [
+        "Mei 2026",
+        "Jun 2026",
+        "Jul 2026",
+        "Agu 2026",
+        "Sep 2026",
+        "Okt 2026"
+      ],
+      "keys": [
+        "2026-05",
+        "2026-06",
+        "2026-07",
+        "2026-08",
+        "2026-09",
+        "2026-10"
+      ],
+      "nino34": [
+        0.52,
+        1.07,
+        1.33,
+        1.67,
+        2.07,
+        2.16
+      ]
+    }
   }
 }
