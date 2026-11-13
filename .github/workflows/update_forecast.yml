@@ -2,9 +2,9 @@ name: Perbarui prakiraan
 
 on:
   schedule:
-    # Tanggal 11-13 tiap bulan, 14:00 UTC (22:00 WITA). C3S merilis sekitar tanggal 10.
-    # Jika data belum terbit, run gagal dan dicoba lagi keesokan harinya.
-    - cron: "0 14 11-13 * *"
+    # Tanggal 6-8 tiap bulan, 14:00 UTC (22:00 WITA). SEAS5 di Open-Meteo diperbarui tanggal 5.
+    # Skrip melewati run jika data bulan itu sudah ada, jadi aman dijalankan 3 hari berturut-turut.
+    - cron: "0 14 6-8 * *"
   workflow_dispatch:   # tombol "Run workflow" untuk uji manual
 
 permissions:
@@ -13,7 +13,7 @@ permissions:
 jobs:
   update:
     runs-on: ubuntu-latest
-    timeout-minutes: 240
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -22,13 +22,10 @@ jobs:
           python-version: "3.12"
 
       - name: Pasang dependensi
-        run: pip install cdsapi xarray cfgrib eccodes numpy
+        run: pip install requests numpy
 
       - name: Unduh dan hitung prakiraan
         run: python scripts/update_forecast.py
-        env:
-          CDSAPI_URL: https://cds.climate.copernicus.eu/api
-          CDSAPI_KEY: ${{ secrets.CDSAPI_KEY }}
 
       - name: Commit hasil
         run: |
