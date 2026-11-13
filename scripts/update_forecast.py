@@ -112,7 +112,8 @@ def main():
             print(f"Data {ym} sudah terbaru; dilewati (set FORCE=1 untuk memaksa).")
             return
 
-    client = cdsapi.Client()
+    # Bawaan cdsapi: 500 percobaan x 120 detik, bisa menggantung berjam-jam saat server error.
+    client = cdsapi.Client(retry_max=3, sleep_max=60)
     models, probs = {}, []
     for label, (centre, system) in CENTRES.items():
         try:
