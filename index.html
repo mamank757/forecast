@@ -99,10 +99,10 @@ const DEMO = {
   },
   nino34: {
     models: {
-      "ECMWF": [-0.6, -0.5, -0.3, -0.1, 0.0],
-      "NCEP CFSv2": [-0.8, -0.7, -0.5, -0.3, -0.1],
-      "GFDL SPEAR": [-0.5, -0.4, -0.2, 0.0, 0.1]
-    }
+      "ECMWF SEAS5 (mentah, tradisional)": [-0.6, -0.5, -0.3, -0.1, 0.0]
+    },
+    ensemble: [-1.0, -0.9, -0.7, -0.5, -0.4],
+    calibration: { method: "offset", offset: 0.4, months: ["Jul 2026", "Agu 2026", "Sep 2026"] }
   },
   tercile: { below: [20, 25, 30, 32, 33], normal: [30, 30, 35, 35, 34], above: [50, 45, 35, 33, 33] },
   note: ""
@@ -148,7 +148,7 @@ function drawPlume(d, ens) {
   const first = Math.min(...pN, ...rN, ...fN), last = Math.max(...pN, ...rN, ...fN);
   const span = Math.max(1, last - first);
   const all = [...ens, ...Object.values(d.nino34.models).flat(), ...(past ? past.nino34 : []), ...(rel ? rel.nino34 : [])];
-  const lo = Math.min(-1.5, Math.floor(Math.min(...all))), hi = Math.max(1.5, Math.ceil(Math.max(...all)));
+  const lo = Math.min(-1.5, Math.floor(Math.min(...all))), hi = Math.max(1.5, Math.ceil(Math.max(...all) + 0.3));
   const pw = W - m.l - m.r;
   const x = n => m.l + pad + (n - first) * (pw - 2 * pad) / span;
   const y = v => m.t + (hi - v) * (H - m.t - m.b) / (hi - lo);
@@ -189,9 +189,12 @@ function drawPlume(d, ens) {
 
   // Analisis teramati (tradisional) + sambungan putus-putus ke prakiraan pertama
   if (past) {
-    const iLast = pN.indexOf(Math.max(...pN));
+    // Sambungan memakai garis yang skalanya sama dengan prakiraan: relatif jika prakiraan disetarakan
+    const useRel = !!(d.nino34.calibration && rel);
+    const bN = useRel ? rN : pN, bV = useRel ? rel.nino34 : past.nino34;
+    const iLast = bN.indexOf(Math.max(...bN));
     svg.appendChild(s("path", {
-      d: path([pN[iLast], fN[0]], [past.nino34[iLast], ens[0]]), class: "bridge"
+      d: path([bN[iLast], fN[0]], [bV[iLast], ens[0]]), class: "bridge"
     }));
     svg.appendChild(s("path", { d: path(pN, past.nino34), class: "pline" }));
     past.nino34.forEach((v, i) => {
@@ -237,19 +240,25 @@ function render(d, isDemo) {
   const avg = mean(ens);
   const past = hasPast(d) ? d.past : null;
   const rel = hasRel(d) ? d.past.relative : null;
+  const cal = d.nino34.calibration || null;
+  const models = Object.values(d.nino34.models);
+  const rawAvg = mean(d.months.map((_, i) => mean(models.map(a => a[i]))));
   document.getElementById("demo").hidden = !isDemo;
   const title = `Prakiraan hujan ${d.months.length} bulan ke depan`;
   document.getElementById("title").textContent = title;
   document.title = title + " berbasis ENSO";
   document.getElementById("meta").textContent =
     `${d.location}. Dirilis: ${d.issued}.`;
-  let lead = `Rata-rata ensemble Niño3.4 (indeks tradisional) untuk ${d.months[0]} sampai ${d.months[d.months.length - 1]} berada di ${fmt(avg)} °C.`;
+  const span = `${d.months[0]} sampai ${d.months[d.months.length - 1]}`;
+  let lead = cal
+    ? `Rata-rata prakiraan Niño3.4 untuk ${span} berada di ${fmt(avg)} °C pada skala indeks relatif (SEAS5 mentah, tradisional: ${fmt(rawAvg)} °C).`
+    : `Rata-rata ensemble Niño3.4 (indeks tradisional) untuk ${span} berada di ${fmt(avg)} °C.`;
   if (past) {
     const i = past.nino34.length - 1;
-    lead += ` Analisis terbaru (${past.months[i]}): ${fmt(past.nino34[i])} °C`;
+    lead += ` Analisis terbaru (${past.months[i]}): ${fmt(past.nino34[i])} °C tradisional`;
     if (rel) {
       const j = rel.nino34.length - 1;
-      lead += `; indeks relatif (${rel.months[j]}): ${fmt(rel.nino34[j])} °C`;
+      lead += `, ${fmt(rel.nino34[j])} °C relatif (${rel.months[j]})`;
     }
     lead += ".";
   }
@@ -266,23 +275,20 @@ function render(d, isDemo) {
     key.appendChild(sp);
   };
   if (past) item("var(--ink)", "Teramati, tradisional");
-  if (rel) item("#b5651d", "Teramati, relatif (basis BoM/NOAA)");
-  item("var(--sea)", "Prakiraan SEAS5, tradisional");
-  item("#8a9ba2", "Masing-masing model");
+  if (rel) item("#b5651d", "Teramati, relatif (CPC)");
+  item("var(--sea)", cal ? "Prakiraan SEAS5, disetarakan ke relatif" : "Prakiraan SEAS5, tradisional");
+  item("#8a9ba2", cal ? "SEAS5 mentah (tradisional)" : "Masing-masing model");
 
-  let diffTxt = "";
-  if (past && rel) {
-    const pm = new Map(past.months.map((m, i) => [monthNum(m), past.nino34[i]]));
-    const diffs = rel.months.map((m, i) => [monthNum(m), rel.nino34[i]])
-      .filter(([n]) => pm.has(n)).map(([n, v]) => pm.get(n) - v);
-    if (diffs.length) {
-      diffTxt = ` Pada ${diffs.length} bulan yang sama, indeks tradisional rata-rata ${fmt(mean(diffs))} °C terhadap relatif (selisih ini juga memuat perbedaan dataset OISST dan ERSSTv6).`;
-    }
+  let capTxt = "";
+  if (cal) {
+    capTxt = `Garis tebal adalah SEAS5 yang dikurangi ${fmt(cal.offset).replace(/^\+/, "")} °C, yaitu rata-rata selisih Niño3.4 tradisional dan relatif pada ${cal.months.join(", ")}, agar skalanya sebanding dengan indeks relatif. ` +
+      "Ini konversi skala, bukan koreksi bias model: SEAS5 dan model BoM (ACCESS-S) tetap bisa berbeda, terutama untuk bulan yang jauh, dan selisih skala itu sendiri bisa berubah seiring El Niño melemah. ";
+  } else {
+    capTxt = "BoM dan NOAA kini memakai indeks relatif (anomali Niño3.4 dikurangi rata-rata tropis), sehingga angkanya lebih rendah daripada indeks tradisional yang dipakai prakiraan ini. ";
   }
-  document.getElementById("cap").textContent =
-    "BoM dan NOAA kini memakai indeks relatif, yaitu anomali Niño3.4 dikurangi rata-rata tropis, jadi nilainya lebih rendah daripada indeks tradisional. " +
-    "Untuk membandingkan dengan BoM atau NOAA, lihat garis relatif; prakiraan SEAS5 belum tersedia dalam versi relatif." + diffTxt +
-    " Pita ±0,5 °C mengikuti ambang NOAA, sedangkan BoM memakai sekitar ±0,8 °C. Nilai berupa anomali bulanan, bukan ONI tiga bulanan.";
+  document.getElementById("cap").textContent = capTxt +
+    "Garis relatif CPC bisa sedikit berbeda dari R-Niño3.4 BoM karena metode dan data analisis keduanya tidak identik. " +
+    "Pita ±0,5 °C mengikuti ambang NOAA, sedangkan BoM memakai sekitar ±0,8 °C. Nilai berupa anomali bulanan, bukan ONI tiga bulanan.";
   if (d.note) document.getElementById("foot").textContent = d.note;
   drawPlume(d, ens);
   drawBars(d);
