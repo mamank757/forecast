@@ -1,105 +1,149 @@
 #!/usr/bin/env python3
-"""Perbarui data/forecast.json dari prakiraan musiman Copernicus C3S.
+"""Perbarui data/forecast.json dari Open-Meteo Seasonal API (ECMWF SEAS5). Tanpa akun/token.
 
-- Anomali Niño3.4: ensemble mean model dikurangi klimatologi hindcast model itu sendiri.
-- Peluang tercile hujan: porsi anggota ensemble yang jatuh di bawah/di atas tercile hindcast
-  untuk kotak lokal (mentah, BELUM dikalibrasi ke pos hujan).
-Skrip membaca CDSAPI_URL dan CDSAPI_KEY dari environment.
+- Anomali Niño3.4: rata-rata anomali SST bulanan di 9 titik dalam kotak 5°LU-5°LS, 170°BB-120°BB.
+- Peluang hujan: porsi anggota ensemble (51) yang anomali relatifnya jatuh di bawah/di atas
+  tercile anomali relatif hujan bulanan ERA5 1991-2020 di titik lokal. Tidak bergantung satuan,
+  karena anomali dibagi klimatologi model (klimatologi = nilai mean - anomali).
+Catatan: nama parameter/kolom Open-Meteo belum diuji dari sini. Jalankan sekali dan baca lognya.
 """
 import datetime as dt
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
-import cdsapi
 import numpy as np
-import xarray as xr
+import requests
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA = ROOT / "data"
-CACHE = DATA / "cache"      # klimatologi hindcast, di-commit supaya tidak diunduh ulang
-TMP = ROOT / "tmp"
 OUT = DATA / "forecast.json"
 
-DATASET = "seasonal-monthly-single-levels"
-NINO34 = [5, -170, -5, -120]                  # utara, barat, selatan, timur
-LOCAL = json.loads(os.environ.get("LOCAL_AREA", "[-2, 118, -8, 123]"))  # Sulawesi Selatan
-LOCATION = os.environ.get("LOCATION", "Sulawesi Selatan")
-LEADS = [2, 3, 4]                             # lead 1 = bulan rilis; 3 bulan berikutnya = 2-4
-HINDCAST_YEARS = range(1993, 2017)
+SEASONAL = "https://seasonal-api.open-meteo.com/v1/seasonal"
+ARCHIVE = "https://archive-api.open-meteo.com/v1/archive"
 
-# Label: (originating_centre, system). CEK nomor system di form CDS sebelum dipakai;
-# tambahkan pusat lain (meteo_france, dwd, cmcc, ncep) setelah nomornya dipastikan.
-CENTRES = {
-    "ECMWF": ("ecmwf", "51"),
-    "UK Met Office": ("ukmo", "610"),
-}
+# Titik lokal [lintang, bujur]; ganti lewat env POINTS, mis. '[[-5.15,119.4],[-4.0,119.6]]'
+POINTS = json.loads(os.environ.get("POINTS", "[[-5.15, 119.40]]"))
+LOCATION = os.environ.get("LOCATION", "Makassar, Sulawesi Selatan")
+NINO_POINTS = [[lat, lon] for lat in (-4, 0, 4) for lon in (-165, -145, -125)]
 
 BULAN = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"]
 
 
-def fetch(client, centre, system, var, area, years, month, out):
-    if out.exists():
-        return out
-    out.parent.mkdir(parents=True, exist_ok=True)
-    client.retrieve(DATASET, {
-        "originating_centre": centre,
-        "system": system,
-        "variable": [var],
-        "product_type": ["monthly_mean"],
-        "year": [str(y) for y in years],
-        "month": [f"{month:02d}"],
-        "leadtime_month": [str(l) for l in LEADS],
-        "area": area,
-        "data_format": "grib",
-    }, str(out))
-    return out
+def get(url, params):
+    """GET dengan retry untuk error jaringan/5xx; error 4xx (permintaan salah) langsung berhenti."""
+    err = ""
+    for i in range(3):
+        try:
+            r = requests.get(url, params=params, timeout=90)
+            if r.status_code == 200:
+                return r.json()
+            err = f"HTTP {r.status_code}: {r.text[:300]}"
+            if 400 <= r.status_code < 500 and r.status_code != 429:
+                raise RuntimeError(err)
+        except requests.RequestException as e:
+            err = str(e)
+        print(f"Percobaan {i + 1} gagal: {err}", file=sys.stderr)
+        time.sleep(20 * (i + 1))
+    raise RuntimeError(err)
 
 
-def pool(path):
-    """Rata-rata area (berbobot cos lintang) -> array (lead, sampel); sampel = anggota x tahun."""
-    ds = xr.open_dataset(path, engine="cfgrib", backend_kwargs={"indexpath": ""})
-    da = ds[list(ds.data_vars)[0]]
-    lat = next(d for d in da.dims if d.startswith("lat"))
-    lon = next(d for d in da.dims if d.startswith("lon"))
-    da = da.weighted(np.cos(np.deg2rad(da[lat]))).mean([lat, lon])
-    lead = "forecastMonth" if "forecastMonth" in da.dims else "step"
-    da = da.transpose(lead, ...)
-    return da.values.reshape(da.sizes[lead], -1)
+def as_list(d):
+    return d if isinstance(d, list) else [d]
 
 
-def run_model(client, centre, system, start):
-    m, y = start.month, start.year
-    key = f"{centre}_{system}_{m:02d}"
+def pick(monthly, var, kind):
+    """Kolom bulanan yang namanya memuat `var` dan `kind` (mean/anomaly), terurut per anggota."""
+    cols = sorted(k for k in monthly if k != "time" and var in k and kind in k)
+    if not cols:
+        raise RuntimeError(f"Kolom {var}/{kind} tidak ada. Kunci respons: {list(monthly)[:20]}")
+    return cols
 
-    cache_file = CACHE / f"{key}.json"
-    if cache_file.exists():
-        clim = json.loads(cache_file.read_text())
-    else:
-        hs = pool(fetch(client, centre, system, "sea_surface_temperature", NINO34,
-                        HINDCAST_YEARS, m, TMP / f"{key}_hc_sst.grib"))
-        ht = pool(fetch(client, centre, system, "total_precipitation", LOCAL,
-                        HINDCAST_YEARS, m, TMP / f"{key}_hc_tp.grib"))
-        clim = {
-            "sst": np.nanmean(hs, axis=1).tolist(),
-            "t33": np.nanpercentile(ht, 100 / 3, axis=1).tolist(),
-            "t67": np.nanpercentile(ht, 200 / 3, axis=1).tolist(),
-        }
-        CACHE.mkdir(parents=True, exist_ok=True)
-        cache_file.write_text(json.dumps(clim))
 
-    fs = pool(fetch(client, centre, system, "sea_surface_temperature", NINO34,
-                    [y], m, TMP / f"{key}_{y}_fc_sst.grib"))
-    ft = pool(fetch(client, centre, system, "total_precipitation", LOCAL,
-                    [y], m, TMP / f"{key}_{y}_fc_tp.grib"))
+def target_index(times, start):
+    """Indeks 3 bulan setelah bulan rilis (lead 2-4) di daftar waktu respons."""
+    idx, labels, nums = [], [], []
+    for i in (1, 2, 3):
+        k = start.month - 1 + i
+        key = f"{start.year + k // 12}-{k % 12 + 1:02d}"
+        j = next((n for n, t in enumerate(times) if str(t).startswith(key)), None)
+        if j is None:
+            raise RuntimeError(f"Bulan {key} tidak ada di respons. Waktu: {times}")
+        idx.append(j)
+        labels.append(f"{BULAN[k % 12]} {start.year + k // 12}")
+        nums.append(k % 12 + 1)
+    return idx, labels, nums
 
-    anom = np.round(np.nanmean(fs, axis=1) - np.array(clim["sst"]), 2).tolist()
-    t33 = np.array(clim["t33"])[:, None]
-    t67 = np.array(clim["t67"])[:, None]
-    below = (ft < t33).mean(axis=1)
-    above = (ft > t67).mean(axis=1)
-    return anom, np.stack([below, 1 - below - above, above])
+
+def matrix(monthly, cols, idx):
+    return np.array([[monthly[c][j] for j in idx] for c in cols], dtype=float)
+
+
+def nino34(start):
+    d = as_list(get(SEASONAL, {
+        "latitude": ",".join(str(p[0]) for p in NINO_POINTS),
+        "longitude": ",".join(str(p[1]) for p in NINO_POINTS),
+        "models": "ecmwf_seas5_ensemble_mean",
+        "monthly": "sea_surface_temperature_anomaly",
+    }))
+    per_point = []
+    for loc in d:
+        m = loc["monthly"]
+        idx, _, _ = target_index(m["time"], start)
+        cols = pick(m, "sea_surface_temperature", "anomaly")
+        per_point.append(np.nanmean(matrix(m, cols, idx), axis=0))
+    return np.round(np.nanmean(per_point, axis=0), 2).tolist()
+
+
+def era5_rel_terciles(lat, lon):
+    """Tercile (33%, 67%) anomali relatif hujan bulanan ERA5 1991-2020, per nomor bulan."""
+    d = get(ARCHIVE, {
+        "latitude": lat, "longitude": lon,
+        "start_date": "1991-01-01", "end_date": "2020-12-31",
+        "daily": "precipitation_sum", "timezone": "UTC",
+    })["daily"]
+    totals = {}
+    for t, v in zip(d["time"], d["precipitation_sum"]):
+        if v is not None:
+            key = (int(t[:4]), int(t[5:7]))
+            totals[key] = totals.get(key, 0.0) + v
+    res = {}
+    for mo in range(1, 13):
+        x = np.array([totals[(y, mo)] for y in range(1991, 2021) if (y, mo) in totals])
+        if len(x) >= 20 and x.mean() > 0:
+            res[mo] = np.percentile(x / x.mean() - 1, [100 / 3, 200 / 3])
+    return res
+
+
+def precip_probs(start):
+    """Rata-rata antar titik dari peluang (di bawah, normal, di atas) per bulan target."""
+    all_p, labels = [], None
+    for lat, lon in POINTS:
+        loc = as_list(get(SEASONAL, {
+            "latitude": lat, "longitude": lon,
+            "models": "ecmwf_seas5",
+            "monthly": "precipitation_mean,precipitation_anomaly",
+        }))[0]
+        m = loc["monthly"]
+        print("Kunci respons hujan:", list(m)[:6], "... total", len(m), file=sys.stderr)
+        idx, labels, nums = target_index(m["time"], start)
+        cm, ca = pick(m, "precipitation", "mean"), pick(m, "precipitation", "anomaly")
+        if len(cm) != len(ca) or len(cm) < 10:
+            raise RuntimeError(f"Butuh anggota ensemble berpasangan; dapat mean={len(cm)}, anomali={len(ca)}")
+        V, A = matrix(m, cm, idx), matrix(m, ca, idx)
+        M = V - A                                    # klimatologi model, satuan sama dengan V
+        R = np.where(M > 1e-6, A / M, np.nan)        # anomali relatif, tanpa satuan
+        t = era5_rel_terciles(lat, lon)
+        p = []
+        for k, mo in enumerate(nums):
+            col = R[:, k][~np.isnan(R[:, k])]
+            t33, t67 = t[mo]
+            below, above = np.mean(col < t33), np.mean(col > t67)
+            p.append([below, 1 - below - above, above])
+        all_p.append(np.array(p).T)                  # (3 kategori, 3 bulan)
+    return np.mean(all_p, axis=0), labels
 
 
 def main():
@@ -112,30 +156,12 @@ def main():
             print(f"Data {ym} sudah terbaru; dilewati (set FORCE=1 untuk memaksa).")
             return
 
-    # Bawaan cdsapi: 500 percobaan x 120 detik, bisa menggantung berjam-jam saat server error.
-    client = cdsapi.Client(retry_max=3, sleep_max=60)
-    models, probs = {}, []
-    for label, (centre, system) in CENTRES.items():
-        try:
-            anom, p = run_model(client, centre, system, start)
-            models[label] = anom
-            probs.append(p)
-            print(f"OK   {label}: {anom}")
-        except Exception as e:  # satu model gagal tidak menggagalkan semuanya
-            print(f"GAGAL {label}: {e}", file=sys.stderr)
-
-    if not models:
-        sys.exit("Tidak ada model yang berhasil diunduh; data lama dibiarkan.")
-
-    P = np.mean(probs, axis=0)
+    anom = nino34(start)
+    print("Niño3.4 anomali:", anom)
+    P, months = precip_probs(start)
     below = np.rint(P[0] * 100).astype(int)
     above = np.rint(P[2] * 100).astype(int)
     normal = 100 - below - above
-
-    months = []
-    for L in LEADS:
-        idx = start.month - 1 + (L - 1)
-        months.append(f"{BULAN[idx % 12]} {start.year + idx // 12}")
 
     DATA.mkdir(exist_ok=True)
     OUT.write_text(json.dumps({
@@ -143,14 +169,18 @@ def main():
         "issued": now.strftime("%Y-%m-%d"),
         "location": LOCATION,
         "months": months,
-        "nino34": {"models": models},
+        "nino34": {"models": {"ECMWF SEAS5": anom}},
         "tercile": {"below": below.tolist(), "normal": normal.tolist(), "above": above.tolist()},
-        "note": ("Sumber: Copernicus C3S. Anomali terhadap klimatologi hindcast 1993–2016 tiap model. "
-                 "Peluang hujan dihitung langsung dari anggota ensemble dan belum dikalibrasi ke pos hujan. "
+        "note": ("Sumber: ECMWF SEAS5 melalui Open-Meteo.com (CC BY 4.0, non-komersial). "
+                 "Anomali terhadap klimatologi model. Peluang hujan dihitung dari anggota ensemble "
+                 "terhadap tercile anomali relatif ERA5 1991–2020 dan belum dikalibrasi ke pos hujan. "
                  "Bukan prakiraan resmi BMKG."),
     }, ensure_ascii=False, indent=2))
     print("Menulis", OUT)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        sys.exit(f"GAGAL: {e}")
