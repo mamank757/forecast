@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Prakiraan hujan 3 bulan ke depan berbasis ENSO</title>
+<title>Prakiraan hujan 5 bulan ke depan berbasis ENSO</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,500;6..72,700&family=Instrument+Sans:wght@400;600&display=swap" rel="stylesheet">
@@ -55,7 +55,7 @@ footer{margin-top:2.5rem;padding-top:1rem;border-top:1px solid var(--line);font-
 </head>
 <body>
 <main>
-  <h1>Prakiraan hujan 3 bulan ke depan</h1>
+  <h1 id="title">Prakiraan hujan 5 bulan ke depan</h1>
   <p class="sub" id="meta">Memuat data…</p>
   <div class="demo" id="demo" hidden>Data contoh, bukan prakiraan sungguhan. Taruh berkas <code>data/forecast.json</code> di repositori ini untuk menampilkan data Anda.</div>
 
@@ -67,7 +67,7 @@ footer{margin-top:2.5rem;padding-top:1rem;border-top:1px solid var(--line);font-
 
   <section>
     <h2>Peluang curah hujan per bulan</h2>
-    <p class="cap">Probabilitas tiga kategori terhadap normal 1991–2020.</p>
+    <p class="cap">Probabilitas tiga kategori terhadap normal 1991–2020. Makin jauh bulannya, makin rendah keandalannya.</p>
     <div id="bars"></div>
     <div class="key">
       <span><i style="background:var(--dry)"></i>Di bawah normal</span>
@@ -83,7 +83,7 @@ footer{margin-top:2.5rem;padding-top:1rem;border-top:1px solid var(--line);font-
 const DEMO = {
   issued: "contoh",
   location: "Makassar, Sulawesi Selatan",
-  months: ["Des 2026", "Jan 2027", "Feb 2027"],
+  months: ["Des 2026", "Jan 2027", "Feb 2027", "Mar 2027", "Apr 2027"],
   past: {
     source: "contoh",
     months: ["Mei 2026", "Jun 2026", "Jul 2026", "Agu 2026", "Sep 2026", "Okt 2026"],
@@ -91,12 +91,12 @@ const DEMO = {
   },
   nino34: {
     models: {
-      "ECMWF": [-0.6, -0.5, -0.3],
-      "NCEP CFSv2": [-0.8, -0.7, -0.5],
-      "GFDL SPEAR": [-0.5, -0.4, -0.2]
+      "ECMWF": [-0.6, -0.5, -0.3, -0.1, 0.0],
+      "NCEP CFSv2": [-0.8, -0.7, -0.5, -0.3, -0.1],
+      "GFDL SPEAR": [-0.5, -0.4, -0.2, 0.0, 0.1]
     }
   },
-  tercile: { below: [20, 25, 30], normal: [30, 30, 35], above: [50, 45, 35] },
+  tercile: { below: [20, 25, 30, 32, 33], normal: [30, 30, 35, 35, 34], above: [50, 45, 35, 33, 33] },
   note: ""
 };
 
@@ -217,6 +217,9 @@ function render(d, isDemo) {
   const phase = avg >= 0.5 ? "El Niño" : avg <= -0.5 ? "La Niña" : "netral";
   const past = hasPast(d) ? d.past : null;
   document.getElementById("demo").hidden = !isDemo;
+  const title = `Prakiraan hujan ${d.months.length} bulan ke depan`;
+  document.getElementById("title").textContent = title;
+  document.title = title + " berbasis ENSO";
   document.getElementById("meta").textContent =
     `${d.location}. Dirilis: ${d.issued}.`;
   let lead = `Rata-rata ensemble Niño3.4 untuk ${d.months[0]} sampai ${d.months[d.months.length - 1]} berada di ${fmt(avg)} °C: kondisi ${phase}.`;
