@@ -5,14 +5,18 @@
   "months": [
     "Des 2026",
     "Jan 2027",
-    "Feb 2027"
+    "Feb 2027",
+    "Mar 2027",
+    "Apr 2027"
   ],
   "nino34": {
     "models": {
       "ECMWF SEAS5": [
         3.92,
         3.92,
-        3.69
+        3.69,
+        3.26,
+        3.02
       ]
     }
   },
@@ -20,20 +24,26 @@
     "below": [
       59,
       69,
-      71
+      71,
+      20,
+      2
     ],
     "normal": [
       39,
       29,
-      25
+      25,
+      27,
+      8
     ],
     "above": [
       2,
       2,
-      4
+      4,
+      53,
+      90
     ]
   },
-  "note": "Sumber: ECMWF SEAS5 melalui Open-Meteo.com (CC BY 4.0, non-komersial); analisis Niño3.4 teramati dari NOAA CPC. Anomali prakiraan terhadap klimatologi model, anomali analisis terhadap klimatologi OISST 1991–2020. Peluang hujan dihitung dari anggota ensemble terhadap tercile anomali relatif ERA5 1991–2020 dan belum dikalibrasi ke pos hujan. Bukan prakiraan resmi BMKG.",
+  "note": "Sumber: ECMWF SEAS5 melalui Open-Meteo.com (CC BY 4.0, non-komersial); analisis Niño3.4 teramati dari NOAA CPC. Anomali prakiraan terhadap klimatologi model, anomali analisis terhadap klimatologi OISST 1991–2020. Peluang hujan dihitung dari anggota ensemble terhadap tercile anomali relatif ERA5 1991–2020 dan belum dikalibrasi ke pos hujan. Keandalan menurun untuk bulan yang lebih jauh. Bukan prakiraan resmi BMKG.",
   "past": {
     "source": "NOAA CPC (OISST v2.1), anomali terhadap 1991–2020",
     "months": [
