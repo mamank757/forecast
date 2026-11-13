@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Perbarui data/forecast.json dari Open-Meteo Seasonal API (ECMWF SEAS5). Tanpa akun/token.
+"""Perbarui data/forecast.json dari Open-Meteo Seasonal API (ECMWF SEAS5) dan NOAA CPC. Tanpa akun/token.
 
-- Anomali Niño3.4: rata-rata anomali SST bulanan di 9 titik dalam kotak 5°LU-5°LS, 170°BB-120°BB.
+- Anomali Niño3.4 (prakiraan): rata-rata anomali SST bulanan di 9 titik dalam kotak 5°LU-5°LS, 170°BB-120°BB.
+- Anomali Niño3.4 (analisis lampau): nilai teramati bulanan NOAA CPC (OISST v2.1, klimatologi 1991-2020)
+  untuk PAST_MONTHS bulan terakhir (default 6 = 5 bulan sebelumnya + bulan terkini yang sudah dirilis).
 - Peluang hujan: porsi anggota ensemble (51, dari data 6-jam) yang anomali relatifnya jatuh
   di bawah/di atas tercile anomali relatif hujan bulanan ERA5 1991-2020 di titik lokal.
-Catatan: nama parameter/kolom Open-Meteo belum diuji dari sini. Jalankan sekali dan baca lognya.
+Catatan: nama parameter/kolom Open-Meteo dan format berkas CPC belum diuji dari sini. Jalankan sekali dan baca lognya.
 """
 import datetime as dt
 import json
@@ -22,23 +24,26 @@ OUT = DATA / "forecast.json"
 
 SEASONAL = "https://seasonal-api.open-meteo.com/v1/seasonal"
 ARCHIVE = "https://archive-api.open-meteo.com/v1/archive"
+CPC_NINO = "https://www.cpc.ncep.noaa.gov/data/indices/sstoi.indices"
 
 # Titik lokal [lintang, bujur]; ganti lewat env POINTS, mis. '[[-5.15,119.4],[-4.0,119.6]]'
 POINTS = json.loads(os.environ.get("POINTS", "[[-5.15, 119.40]]"))
 LOCATION = os.environ.get("LOCATION", "Makassar, Sulawesi Selatan")
 NINO_POINTS = [[lat, lon] for lat in (-4, 0, 4) for lon in (-165, -145, -125)]
+PAST_MONTHS = int(os.environ.get("PAST_MONTHS", "6"))  # 5 bulan lalu + bulan terkini
 
 BULAN = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"]
 
 
-def get(url, params):
+def get(url, params=None, text=False):
     """GET dengan retry untuk error jaringan/5xx; error 4xx (permintaan salah) langsung berhenti."""
     err = ""
     for i in range(3):
         try:
-            r = requests.get(url, params=params, timeout=90)
+            r = requests.get(url, params=params, timeout=90,
+                             headers={"User-Agent": "forecast-updater (GitHub Actions)"})
             if r.status_code == 200:
-                return r.json()
+                return r.text if text else r.json()
             err = f"HTTP {r.status_code}: {r.text[:300]}"
             if 400 <= r.status_code < 500 and r.status_code != 429:
                 raise RuntimeError(err)
@@ -94,6 +99,42 @@ def nino34(start):
         cols = pick(m, "sea_surface_temperature", "anomaly")
         per_point.append(np.nanmean(matrix(m, cols, idx), axis=0))
     return np.round(np.nanmean(per_point, axis=0), 2).tolist()
+
+
+def parse_cpc_nino34(text, n):
+    """Ambil n baris bulanan terakhir dari sstoi.indices NOAA CPC: (tahun, bulan, anomali Niño3.4).
+
+    Kolom dibaca lewat baris judul (YR MON NINO1+2 ANOM NINO3 ANOM NINO4 ANOM NINO3.4 ANOM);
+    jika judul tidak dikenali, dipakai kolom ke-10 (indeks 9).
+    """
+    col = 9
+    rows = []
+    for line in text.splitlines():
+        p = line.split()
+        if "NINO3.4" in p:
+            col = p.index("NINO3.4") + 1  # kolom ANOM tepat setelah NINO3.4
+            continue
+        if len(p) > col and p[0].isdigit() and p[1].isdigit():
+            try:
+                y, mo, v = int(p[0]), int(p[1]), float(p[col])
+            except ValueError:
+                continue
+            if 1 <= mo <= 12 and abs(v) < 5:  # saring baris rusak/nilai hilang (-99.99)
+                rows.append((y, mo, v))
+    if not rows:
+        raise RuntimeError(f"Tidak ada baris Niño3.4 yang terbaca dari CPC. Awal berkas: {text[:200]!r}")
+    return rows[-n:]
+
+
+def nino34_observed(n=PAST_MONTHS):
+    """Analisis Niño3.4 teramati (NOAA CPC) untuk n bulan terakhir yang sudah dirilis."""
+    rows = parse_cpc_nino34(get(CPC_NINO, text=True), n)
+    return {
+        "source": "NOAA CPC (OISST v2.1), anomali terhadap 1991–2020",
+        "months": [f"{BULAN[mo - 1]} {y}" for y, mo, _ in rows],
+        "keys": [f"{y}-{mo:02d}" for y, mo, _ in rows],
+        "nino34": [round(v, 2) for _, _, v in rows],
+    }
 
 
 def era5_rel_terciles(lat, lon):
@@ -180,36 +221,56 @@ def precip_probs(start):
     return np.mean(all_p, axis=0), labels
 
 
+def latest_expected_key(start):
+    """Kunci bulan (YYYY-MM) terakhir yang seharusnya sudah ada di analisis lampau: bulan sebelum rilis."""
+    k = start.month - 2
+    return f"{start.year + k // 12}-{k % 12 + 1:02d}"
+
+
 def main():
     now = dt.datetime.now(dt.timezone.utc)
     ym = os.environ.get("START", now.strftime("%Y-%m"))
     start = dt.date(int(ym[:4]), int(ym[5:7]), 1)
 
     if OUT.exists() and not os.environ.get("FORCE"):
-        if json.loads(OUT.read_text()).get("start") == ym:
+        old = json.loads(OUT.read_text())
+        keys = (old.get("past") or {}).get("keys") or [""]
+        # Lewati hanya jika prakiraan bulan ini ada DAN analisis lampau sudah sampai bulan sebelumnya
+        # (CPC kadang terlambat; run hari berikutnya akan mencoba lagi).
+        if old.get("start") == ym and keys[-1] >= latest_expected_key(start):
             print(f"Data {ym} sudah terbaru; dilewati (set FORCE=1 untuk memaksa).")
             return
 
     anom = nino34(start)
     print("Niño3.4 anomali:", anom)
+    try:
+        past = nino34_observed()
+        print("Niño3.4 teramati:", dict(zip(past["months"], past["nino34"])))
+    except Exception as e:  # analisis lampau hanya pelengkap; jangan gagalkan prakiraan
+        print(f"Peringatan: analisis Niño3.4 teramati gagal ({e}); grafik tanpa data lampau.", file=sys.stderr)
+        past = None
     P, months = precip_probs(start)
     below = np.rint(P[0] * 100).astype(int)
     above = np.rint(P[2] * 100).astype(int)
     normal = 100 - below - above
 
     DATA.mkdir(exist_ok=True)
-    OUT.write_text(json.dumps({
+    out = {
         "start": ym,
         "issued": now.strftime("%Y-%m-%d"),
         "location": LOCATION,
         "months": months,
         "nino34": {"models": {"ECMWF SEAS5": anom}},
         "tercile": {"below": below.tolist(), "normal": normal.tolist(), "above": above.tolist()},
-        "note": ("Sumber: ECMWF SEAS5 melalui Open-Meteo.com (CC BY 4.0, non-komersial). "
-                 "Anomali terhadap klimatologi model. Peluang hujan dihitung dari anggota ensemble "
+        "note": ("Sumber: ECMWF SEAS5 melalui Open-Meteo.com (CC BY 4.0, non-komersial); analisis Niño3.4 "
+                 "teramati dari NOAA CPC. Anomali prakiraan terhadap klimatologi model, anomali analisis "
+                 "terhadap klimatologi OISST 1991–2020. Peluang hujan dihitung dari anggota ensemble "
                  "terhadap tercile anomali relatif ERA5 1991–2020 dan belum dikalibrasi ke pos hujan. "
                  "Bukan prakiraan resmi BMKG."),
-    }, ensure_ascii=False, indent=2))
+    }
+    if past:
+        out["past"] = past
+    OUT.write_text(json.dumps(out, ensure_ascii=False, indent=2))
     print("Menulis", OUT)
 
 
