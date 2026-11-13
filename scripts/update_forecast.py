@@ -2,9 +2,8 @@
 """Perbarui data/forecast.json dari Open-Meteo Seasonal API (ECMWF SEAS5). Tanpa akun/token.
 
 - Anomali Niño3.4: rata-rata anomali SST bulanan di 9 titik dalam kotak 5°LU-5°LS, 170°BB-120°BB.
-- Peluang hujan: porsi anggota ensemble (51) yang anomali relatifnya jatuh di bawah/di atas
-  tercile anomali relatif hujan bulanan ERA5 1991-2020 di titik lokal. Tidak bergantung satuan,
-  karena anomali dibagi klimatologi model (klimatologi = nilai mean - anomali).
+- Peluang hujan: porsi anggota ensemble (51, dari data 6-jam) yang anomali relatifnya jatuh
+  di bawah/di atas tercile anomali relatif hujan bulanan ERA5 1991-2020 di titik lokal.
 Catatan: nama parameter/kolom Open-Meteo belum diuji dari sini. Jalankan sekali dan baca lognya.
 """
 import datetime as dt
@@ -118,31 +117,51 @@ def era5_rel_terciles(lat, lon):
 
 
 def precip_probs(start):
-    """Rata-rata antar titik dari peluang (di bawah, normal, di atas) per bulan target."""
+    """Rata-rata antar titik dari peluang (di bawah, normal, di atas) per bulan target.
+
+    Data bulanan Open-Meteo hanya berisi rata-rata ensemble, jadi total hujan per anggota
+    dihitung dari data 6-jam. Klimatologi model = (mean - anomali) dalam satuan data bulanan,
+    lalu diskalakan ke mm/bulan dengan membandingkan rata-rata anggota terhadap nilai mean.
+    """
     all_p, labels = [], None
     for lat, lon in POINTS:
         loc = as_list(get(SEASONAL, {
             "latitude": lat, "longitude": lon,
             "models": "ecmwf_seas5",
+            "six_hourly": "precipitation",
             "monthly": "precipitation_mean,precipitation_anomaly",
         }))[0]
-        m = loc["monthly"]
-        print("Kunci respons hujan:", list(m)[:6], "... total", len(m), file=sys.stderr)
-        idx, labels, nums = target_index(m["time"], start)
-        cm, ca = pick(m, "precipitation", "mean"), pick(m, "precipitation", "anomaly")
-        if len(cm) != len(ca) or len(cm) < 10:
-            raise RuntimeError(f"Butuh anggota ensemble berpasangan; dapat mean={len(cm)}, anomali={len(ca)}")
-        V, A = matrix(m, cm, idx), matrix(m, ca, idx)
-        M = V - A                                    # klimatologi model, satuan sama dengan V
-        R = np.where(M > 1e-6, A / M, np.nan)        # anomali relatif, tanpa satuan
-        t = era5_rel_terciles(lat, lon)
+        sh, mo = loc["six_hourly"], loc["monthly"]
+        print("Kunci six_hourly:", list(sh)[:5], "... total", len(sh), file=sys.stderr)
+        cols = sorted(k for k in sh if k != "time" and k.startswith("precipitation"))
+        if len(cols) < 10:
+            raise RuntimeError(f"Butuh anggota ensemble; hanya {len(cols)} kolom: {list(sh)[:10]}")
+        X = np.array([sh[c] for c in cols], dtype=float)      # (anggota, langkah 6 jam)
+        stamps = [str(t) for t in sh["time"]]
+        idx, labels, nums = target_index(mo["time"], start)
+        terc = era5_rel_terciles(lat, lon)
         p = []
-        for k, mo in enumerate(nums):
-            col = R[:, k][~np.isnan(R[:, k])]
-            t33, t67 = t[mo]
-            below, above = np.mean(col < t33), np.mean(col > t67)
+        for i, (j, num) in enumerate(zip(idx, nums)):
+            kk = start.month - 1 + (i + 1)
+            key = f"{start.year + kk // 12}-{kk % 12 + 1:02d}"
+            sel = np.array([s.startswith(key) for s in stamps])
+            T = X[:, sel].sum(axis=1)                          # total bulanan per anggota (mm)
+            mean_v = float(mo["precipitation_mean"][j])
+            anom_v = float(mo["precipitation_anomaly"][j])
+            if mean_v <= 0 or sel.sum() == 0:
+                raise RuntimeError(f"Data hujan {key} tidak valid (mean={mean_v}, langkah={sel.sum()})")
+            scale = np.nanmean(T) / mean_v                     # satuan bulanan -> mm/bulan
+            M = (mean_v - anom_v) * scale                      # klimatologi model (mm/bulan)
+            if M <= 0:
+                raise RuntimeError(f"Klimatologi model {key} tidak positif: {M}")
+            R = T / M - 1                                      # anomali relatif per anggota
+            print(f"{key}: langkah={sel.sum()}, skala={scale:.1f}, klimatologi={M:.0f} mm, "
+                  f"anomali rata-rata={np.nanmean(R) * 100:.0f}%", file=sys.stderr)
+            R = R[~np.isnan(R)]
+            t33, t67 = terc[num]
+            below, above = np.mean(R < t33), np.mean(R > t67)
             p.append([below, 1 - below - above, above])
-        all_p.append(np.array(p).T)                  # (3 kategori, 3 bulan)
+        all_p.append(np.array(p).T)                            # (3 kategori, 3 bulan)
     return np.mean(all_p, axis=0), labels
 
 
